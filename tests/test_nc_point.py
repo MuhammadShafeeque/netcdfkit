@@ -1,5 +1,5 @@
 import unittest
-from netcdfkit.nc_point import NetCDFPointExtractor
+from netcdfkit.ncPntExtractor import NetCDFPointExtractor
 
 class TestNetCDFPointExtractor(unittest.TestCase):
     def test_init(self):

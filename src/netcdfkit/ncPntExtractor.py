@@ -23,6 +23,7 @@ class NetCDFPointExtractor:
     - Fast multi-scenario processing (different days_back values)
     - Memory-efficient processing within 32GB RAM limits
     - Easy access to individual point time series
+    - Fixed coordinate transformation and JSON serialization issues
     """
 
     def __init__(self, cache_dir: str | Path = "timeseries_cache"):
@@ -85,9 +86,7 @@ class NetCDFPointExtractor:
             "cluster_summary": {},
         }
 
-        print(
-            f"Detected {n_clusters} spatial clusters, {n_noise} isolated points"
-        )
+        print(f"Detected {n_clusters} spatial clusters, {n_noise} isolated points")
 
         # Analyze each cluster
         for label in unique_labels:
@@ -261,32 +260,49 @@ class NetCDFPointExtractor:
         force_recache: bool = False,
     ) -> str:
         """
-        Extract full time series for all points using optimal spatial chunking
+        Extract and cache time series for all points
+
+        Parameters:
+        -----------
+        netcdf_path : str | Path
+            Path to NetCDF file
+        points_path : str | Path
+            Path to CSV file with point locations
+        variable : str
+            Variable to extract from NetCDF
+        date_col : str, optional
+            Name of date column in points CSV
+        force_recache : bool
+            If True, ignore existing cache and re-extract
 
         Returns:
         --------
-        cache_id : str
-            Identifier for this cached extraction
+        str
+            Cache ID for later retrieval
         """
+        # Generate cache ID
+        cache_id = f"extract_{Path(points_path).stem}"
 
-        print("=" * 60)
-        print("OPTIMAL SPATIAL-TEMPORAL EXTRACTION")
-        print("=" * 60)
+        # Setup cache paths
+        cache_path = self.metadata_dir / f"{cache_id}.json"
+        points_cache_path = self.metadata_dir / f"{cache_id}_points.csv"
 
-        # Load points
+        # Check for existing cache
+        if not force_recache and cache_path.exists() and points_cache_path.exists():
+            print(f"Found existing cache: {cache_id}")
+            try:
+                # Try to load cache
+                with open(cache_path, "r") as f:
+                    self.dataset_info = json.load(f)
+                self.points_df = pd.read_csv(points_cache_path, index_col=0)
+                return cache_id
+            except (json.JSONDecodeError, pd.errors.EmptyDataError, Exception) as e:
+                print(f"Cache appears corrupted ({str(e)}), re-extracting...")
+                force_recache = True
+
+        # Load point data
         print("Loading point data...")
         self.points_df = self._load_points(points_path, date_col)
-
-        # Create cache ID
-        cache_id = f"extract_{len(self.points_df)}pts_{Path(netcdf_path).stem}"
-        cache_path = self.metadata_dir / f"{cache_id}.json"
-
-        # Check if already cached
-        if cache_path.exists() and not force_recache:
-            print(f"Found existing cache: {cache_id}")
-            with open(cache_path, "r") as f:
-                self.dataset_info = json.load(f)
-            return cache_id
 
         # Analyze spatial distribution
         cluster_info = self.analyze_spatial_distribution(self.points_df)
@@ -298,26 +314,43 @@ class NetCDFPointExtractor:
         print("Opening NetCDF dataset...")
         ds = xr.open_dataset(netcdf_path)
 
-        # Setup coordinate transformation
+        # Debug: Print dataset info
+        print(f"Dataset dimensions: {list(ds.dims.keys())}")
+        print(f"Dataset coordinates: {list(ds.coords.keys())}")
+        print(f"Variable '{variable}' dimensions: {ds[variable].dims}")
+
+        # Setup coordinate mapping and transformation
+        coord_mapping = self._detect_coordinate_mapping(ds, variable)
+        print(f"Detected coordinate mapping: {coord_mapping}")
+
         ds_crs = self._get_dataset_crs(ds, variable)
         transformer = self._setup_transformer(ds_crs)
 
         # Extract time series chunk by chunk
         print(
-            f"\\nExtracting time series for {len(self.spatial_chunks)} spatial chunks..."
+            f"\nExtracting time series for {len(self.spatial_chunks)} spatial chunks..."
         )
 
         all_timeseries = {}
 
         for chunk in tqdm(self.spatial_chunks, desc="Processing chunks"):
             chunk_timeseries = self._extract_chunk_timeseries(
-                ds, variable, chunk, transformer
+                ds, variable, chunk, transformer, coord_mapping
             )
             all_timeseries.update(chunk_timeseries)
 
         # Save cached time series
         print("Saving cached time series...")
-        self._save_timeseries_cache(all_timeseries, cache_id)
+        if all_timeseries:
+            self._save_timeseries_cache(all_timeseries, cache_id)
+            print(f"Saved {len(all_timeseries)} time series")
+        else:
+            print("Warning: No time series were successfully extracted!")
+            # Create empty cache file to avoid issues
+            cache_file = self.timeseries_dir / f"{cache_id}_timeseries.parquet"
+            empty_df = pd.DataFrame(columns=["time", "value", "point_id"])
+            empty_df.to_parquet(cache_file, index=False)
+            print("Created empty cache file")
 
         # Save metadata
         self.dataset_info = {
@@ -326,12 +359,12 @@ class NetCDFPointExtractor:
             "variable": variable,
             "n_points": len(self.points_df),
             "date_col": date_col,
-            "spatial_chunks": self.spatial_chunks,
-            "cluster_info": cluster_info,
+            "spatial_chunks": self._convert_numpy_types(self.spatial_chunks),
+            "cluster_info": self._convert_numpy_types(cluster_info),
             "time_range": {
                 "start": str(ds.time.min().values),
                 "end": str(ds.time.max().values),
-                "n_timesteps": len(ds.time),
+                "n_timesteps": int(len(ds.time)),
             },
         }
 
@@ -339,13 +372,53 @@ class NetCDFPointExtractor:
             json.dump(self.dataset_info, f, indent=2)
 
         # Save points metadata
-        points_cache_path = self.metadata_dir / f"{cache_id}_points.csv"
-        self.points_df.to_csv(points_cache_path, index=True)  # Keep index as point_id
+        self.points_df.to_csv(points_cache_path, index=True)
 
-        print(f"\\nCaching complete! Cache ID: {cache_id}")
+        print(f"\nCaching complete! Cache ID: {cache_id}")
         print(f"Time series cached for {len(all_timeseries)} points")
 
         return cache_id
+
+    def _detect_coordinate_mapping(
+        self, ds: xr.Dataset, variable: str
+    ) -> Dict[str, str]:
+        """Detect the coordinate names used in the NetCDF file"""
+
+        var_dims = ds[variable].dims
+        coord_mapping = {}
+
+        # Common coordinate name patterns
+        lon_patterns = ["lon", "longitude", "x", "X", "XLONG"]
+        lat_patterns = ["lat", "latitude", "y", "Y", "XLAT"]
+
+        # Find longitude coordinate
+        for pattern in lon_patterns:
+            if pattern in var_dims or pattern in ds.coords:
+                coord_mapping["lon"] = pattern
+                break
+
+        # Find latitude coordinate
+        for pattern in lat_patterns:
+            if pattern in var_dims or pattern in ds.coords:
+                coord_mapping["lat"] = pattern
+                break
+
+        # If not found, try to infer from coordinate values
+        if "lon" not in coord_mapping or "lat" not in coord_mapping:
+            for coord_name in ds.coords:
+                coord_values = ds.coords[coord_name].values
+                if len(coord_values.shape) == 1:  # 1D coordinate
+                    if np.min(coord_values) >= -180 and np.max(coord_values) <= 180:
+                        if "lon" not in coord_mapping:
+                            coord_mapping["lon"] = coord_name
+                        elif (
+                            "lat" not in coord_mapping
+                            and np.min(coord_values) >= -90
+                            and np.max(coord_values) <= 90
+                        ):
+                            coord_mapping["lat"] = coord_name
+
+        return coord_mapping
 
     def _extract_chunk_timeseries(
         self,
@@ -353,6 +426,7 @@ class NetCDFPointExtractor:
         variable: str,
         chunk: Dict,
         transformer: Optional[Transformer],
+        coord_mapping: Dict[str, str],
     ) -> Dict:
         """Extract time series for all points in a spatial chunk"""
 
@@ -360,42 +434,104 @@ class NetCDFPointExtractor:
         chunk_point_indices = chunk["point_indices"]
         chunk_points = self.points_df.loc[chunk_point_indices]
 
+        # Get coordinate names
+        lon_coord = coord_mapping.get("lon", "x")
+        lat_coord = coord_mapping.get("lat", "y")
+
         # Load spatial subset of NetCDF
         bounds = chunk["bounds"]
 
-        try:
-            # Try to subset spatially to reduce memory usage
-            spatial_subset = ds.sel(
-                x=slice(bounds["min_lon"], bounds["max_lon"]),
-                y=slice(bounds["min_lat"], bounds["max_lat"]),
-            )
-        except Exception:
-            # Fallback to full dataset if spatial subsetting fails
-            spatial_subset = ds
+        # For now, skip spatial subsetting to avoid issues - just use full dataset
+        # This is just an optimization, the main functionality still works
+        print(f"    Using full dataset (spatial subsetting disabled for debugging)")
+        spatial_subset = ds
 
         # Extract time series for each point in chunk
         chunk_timeseries = {}
 
         for point_idx, point_row in chunk_points.iterrows():
-            # Transform coordinates
-            lon, lat = float(point_row["lon"]), float(point_row["lat"])
-            if transformer:
-                x_val, y_val = transformer.transform(lon, lat)
-            else:
-                x_val, y_val = lon, lat
-
-            # Extract point time series
             try:
-                point_data = spatial_subset[variable].sel(
-                    x=x_val, y=y_val, method="nearest"
-                )
-                timeseries = point_data.to_pandas()
-                chunk_timeseries[point_idx] = timeseries
+                # Get original coordinates
+                lon, lat = float(point_row["lon"]), float(point_row["lat"])
+
+                # Transform coordinates if needed
+                if transformer is not None:
+                    x, y = transformer.transform(lon, lat)
+                    print(
+                        f"    Point {point_idx}: ({lon:.3f}, {lat:.3f}) -> ({x:.1f}, {y:.1f})"
+                    )
+                else:
+                    x, y = lon, lat
+                    print(
+                        f"    Point {point_idx}: Using coordinates as-is ({x:.3f}, {y:.3f})"
+                    )
+
+                # Use nearest neighbor interpolation with correct coordinate names
+                # Use direct coordinate assignment instead of dictionary
+                if lon_coord == "x" and lat_coord == "y":
+                    point_data = spatial_subset[variable].sel(
+                        x=x, y=y, method="nearest"
+                    )
+                elif lon_coord == "lon" and lat_coord == "lat":
+                    point_data = spatial_subset[variable].sel(
+                        lon=x, lat=y, method="nearest"
+                    )
+                else:
+                    # Fallback to dictionary method
+                    point_data = spatial_subset[variable].sel(
+                        {lon_coord: x, lat_coord: y}, method="nearest"
+                    )
+
+                # Extract the time series and check for valid data
+                timeseries = point_data.to_series()
+
+                # Check if we got valid data (not all NaN)
+                if not timeseries.empty and not timeseries.isna().all():
+                    chunk_timeseries[point_idx] = timeseries
+                    n_valid = (~timeseries.isna()).sum()
+                    print(
+                        f"    ✓ Point {point_idx}: Extracted {len(timeseries)} timesteps, {n_valid} valid values"
+                    )
+                else:
+                    print(f"    ✗ Point {point_idx}: No valid data found (all NaN)")
 
             except Exception as e:
-                print(f"    Warning: Failed to extract point {point_idx}: {e}")
-                # Create empty time series
-                chunk_timeseries[point_idx] = pd.Series(dtype=float)
+                print(f"    ✗ Point {point_idx}: Failed to extract: {str(e)}")
+                # Add more detailed error info for the first few failures
+                if (
+                    len(chunk_timeseries) == 0 and point_idx <= chunk_points.index[2]
+                ):  # First 3 points
+                    print(f"      Detailed error for debugging:")
+                    print(f"      - lon_coord='{lon_coord}', lat_coord='{lat_coord}'")
+                    print(f"      - Transformed coords: x={x:.1f}, y={y:.1f}")
+                    print(
+                        f"      - Dataset coords available: {list(spatial_subset.coords.keys())}"
+                    )
+                    try:
+                        # Try to see what the nearest coordinate values are
+                        if lon_coord in spatial_subset.coords:
+                            nearest_x_idx = np.argmin(
+                                np.abs(spatial_subset.coords[lon_coord].values - x)
+                            )
+                            nearest_x = spatial_subset.coords[lon_coord].values[
+                                nearest_x_idx
+                            ]
+                            print(
+                                f"      - Nearest {lon_coord} value: {nearest_x:.1f} (index {nearest_x_idx})"
+                            )
+                        if lat_coord in spatial_subset.coords:
+                            nearest_y_idx = np.argmin(
+                                np.abs(spatial_subset.coords[lat_coord].values - y)
+                            )
+                            nearest_y = spatial_subset.coords[lat_coord].values[
+                                nearest_y_idx
+                            ]
+                            print(
+                                f"      - Nearest {lat_coord} value: {nearest_y:.1f} (index {nearest_y_idx})"
+                            )
+                    except Exception as debug_e:
+                        print(f"      - Debug failed: {debug_e}")
+                continue
 
         return chunk_timeseries
 
@@ -594,32 +730,87 @@ class NetCDFPointExtractor:
     def _load_points(
         self, path: str | Path, date_col: Optional[str] = None
     ) -> pd.DataFrame:
-        """Load and standardize point data"""
+        """Load point locations from CSV file"""
         df = pd.read_csv(path)
-        if "lon" not in df.columns and "longitude" in df.columns:
-            df["lon"] = df["longitude"]
-        if "lat" not in df.columns and "latitude" in df.columns:
-            df["lat"] = df["latitude"]
-        if date_col and date_col in df.columns:
+
+        # Ensure required columns exist
+        required_cols = ["lon", "lat"]
+        if date_col and date_col not in df.columns:
+            raise ValueError(f"Date column '{date_col}' not found in points file")
+
+        for col in required_cols:
+            if col not in df.columns:
+                raise ValueError(f"Required column '{col}' not found in points file")
+
+        # Convert date column to datetime if present
+        if date_col:
             df[date_col] = pd.to_datetime(df[date_col])
+
+        # Convert coordinates to float if needed
+        df["lon"] = df["lon"].astype(float)
+        df["lat"] = df["lat"].astype(float)
+
         return df
 
     def _get_dataset_crs(self, ds: xr.Dataset, variable: str) -> CRS | None:
         """Extract CRS from dataset"""
-        grid_mapping_name = ds[variable].attrs.get("grid_mapping")
-        if grid_mapping_name and grid_mapping_name in ds:
-            gm = ds[grid_mapping_name]
-            if "crs_wkt" in gm.attrs:
-                return CRS.from_wkt(gm.attrs["crs_wkt"])
-            if "spatial_ref" in gm.attrs:
-                return CRS.from_wkt(gm.attrs["spatial_ref"])
-            if "epsg_code" in gm.attrs:
-                return CRS.from_epsg(int(gm.attrs["epsg_code"]))
-        if "crs_wkt" in ds.attrs:
-            return CRS.from_wkt(ds.attrs["crs_wkt"])
-        if "spatial_ref" in ds.attrs:
-            return CRS.from_wkt(ds.attrs["spatial_ref"])
+        try:
+            # Check if variable has grid_mapping attribute
+            grid_mapping_name = ds[variable].attrs.get("grid_mapping")
+            if grid_mapping_name and grid_mapping_name in ds:
+                gm = ds[grid_mapping_name]
+
+                # Print CRS variable attributes for debugging
+                print(f"Found CRS variable '{grid_mapping_name}' with attributes:")
+                for attr, value in gm.attrs.items():
+                    print(f"  {attr}: {value}")
+
+                # Try different CRS attribute names
+                if "crs_wkt" in gm.attrs:
+                    return CRS.from_wkt(gm.attrs["crs_wkt"])
+                if "spatial_ref" in gm.attrs:
+                    return CRS.from_wkt(gm.attrs["spatial_ref"])
+                if "epsg_code" in gm.attrs:
+                    return CRS.from_epsg(int(gm.attrs["epsg_code"]))
+
+                # Try to construct CRS from CF attributes
+                if "grid_mapping_name" in gm.attrs:
+                    return self._crs_from_cf_attributes(gm.attrs)
+
+            # Fallback: check dataset-level CRS attributes
+            if "crs_wkt" in ds.attrs:
+                return CRS.from_wkt(ds.attrs["crs_wkt"])
+            if "spatial_ref" in ds.attrs:
+                return CRS.from_wkt(ds.attrs["spatial_ref"])
+
+        except Exception as e:
+            print(f"Warning: Could not extract CRS: {str(e)}")
+
         return None
+
+    def _crs_from_cf_attributes(self, attrs: dict) -> CRS | None:
+        """Try to construct CRS from CF convention attributes"""
+        try:
+            grid_mapping_name = attrs.get("grid_mapping_name", "")
+
+            # Handle Lambert Azimuthal Equal Area
+            if "lambert_azimuthal_equal_area" in grid_mapping_name:
+                central_lon = attrs.get("longitude_of_projection_origin", 0)
+                central_lat = attrs.get("latitude_of_projection_origin", 0)
+                false_easting = attrs.get("false_easting", 0)
+                false_northing = attrs.get("false_northing", 0)
+
+                proj_string = f"+proj=laea +lat_0={central_lat} +lon_0={central_lon} +x_0={false_easting} +y_0={false_northing} +datum=WGS84 +units=m +no_defs"
+                return CRS.from_proj4(proj_string)
+
+            # Add other common projections as needed
+            # For now, return None if we can't handle it
+            print(f"Unhandled grid mapping: {grid_mapping_name}")
+            return None
+
+        except Exception as e:
+            print(f"Warning: Could not construct CRS from CF attributes: {str(e)}")
+            return None
 
     def _setup_transformer(self, ds_crs: Optional[CRS]) -> Optional[Transformer]:
         """Setup coordinate transformer"""
@@ -655,3 +846,46 @@ class NetCDFPointExtractor:
             summaries.append(summary)
 
         return pd.DataFrame(summaries)
+
+    def _convert_numpy_types(self, obj):
+        """Convert numpy types to native Python types for JSON serialization"""
+        if isinstance(obj, dict):
+            # Convert both keys and values, ensuring keys are JSON-compatible
+            converted_dict = {}
+            for k, v in obj.items():
+                # Convert keys to JSON-compatible types
+                if isinstance(k, (np.integer, np.int8, np.int16, np.int32, np.int64)):
+                    key = int(k)
+                elif isinstance(k, (np.floating, np.float16, np.float32, np.float64)):
+                    key = float(k)
+                elif isinstance(k, np.bool_):
+                    key = bool(k)
+                elif hasattr(k, "item") and not isinstance(k, (list, dict, str)):
+                    try:
+                        key = k.item()
+                    except (ValueError, AttributeError):
+                        key = str(k)  # Fallback to string
+                else:
+                    key = k
+
+                # Convert values recursively
+                converted_dict[key] = self._convert_numpy_types(v)
+            return converted_dict
+        elif isinstance(obj, list):
+            return [self._convert_numpy_types(i) for i in obj]
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        elif isinstance(obj, (np.integer, np.int8, np.int16, np.int32, np.int64)):
+            return int(obj)
+        elif isinstance(obj, (np.floating, np.float16, np.float32, np.float64)):
+            return float(obj)
+        elif isinstance(obj, np.bool_):
+            return bool(obj)
+        elif hasattr(obj, "item") and not isinstance(obj, (list, dict, str)):
+            # Handle other numpy scalars
+            try:
+                return obj.item()
+            except (ValueError, AttributeError):
+                return obj
+        else:
+            return obj
