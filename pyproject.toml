@@ -1,0 +1,25 @@
+[project]
+name = "netcdfkit"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "MuhammadShafeeque", email = "120993860+MuhammadShafeeque@users.noreply.github.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "dask>=2025.5.1",
+    "h5netcdf>=1.6.1",
+    "pandas>=2.3.0",
+    "pyarrow>=20.0.0",
+    "pyproj>=3.7.1",
+    "ruff>=0.11.13",
+    "scikit-learn>=1.7.0",
+    "tool>=0.8.0",
+    "tqdm>=4.67.1",
+    "xarray>=2025.4.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
