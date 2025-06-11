@@ -1,32 +1,125 @@
 [project]
 name = "netcdfkit"
 version = "0.1.0"
-description = "Add your description here"
+description = "High-Performance NetCDF Data Extraction Toolkit for Climate and Environmental Sciences"
 readme = "README.md"
+license = { text = "MIT" }
 authors = [
-    { name = "MuhammadShafeeque", email = "120993860+MuhammadShafeeque@users.noreply.github.com" }
+    { name = "Muhammad Shafeeque", email = "muhammad.shafeeque@awi.de" }
+]
+maintainers = [
+    { name = "Muhammad Shafeeque", email = "muhammad.shafeeque@awi.de" }
+]
+keywords = [
+    "netcdf",
+    "climate",
+    "environmental",
+    "geospatial",
+    "time-series",
+    "data-extraction",
+    "atmospheric-science",
+    "earth-science",
+    "spatial-analysis",
+    "meteorology"
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Atmospheric Science",
+    "Topic :: Scientific/Engineering :: GIS",
+    "Topic :: Scientific/Engineering :: Information Analysis",
+    "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 requires-python = ">=3.12"
 dependencies = [
-    "dask>=2025.5.1",
-    "folium>=0.19.7",
-    "geopandas>=1.1.0",
-    "h5netcdf>=1.6.1",
-    "jupyter>=1.1.1",
-    "pandas>=2.3.0",
-    "pyarrow>=20.0.0",
-    "pyproj>=3.7.1",
-    "rasterio>=1.4.3",
-    "regionmask>=0.13.0",
-    "ruff>=0.11.13",
-    "scikit-learn>=1.7.0",
-    "seaborn>=0.13.2",
-    "shapely>=2.1.1",
-    "tool>=0.8.0",
-    "tqdm>=4.67.1",
-    "xarray>=2025.4.0",
+    "build>=1.2.2.post1",
+    "bumpver>=2024.1130",
+    "dask>=2024.1.0",
+    "geopandas>=0.14.0",
+    "numpy>=1.24.0",
+    "pandas>=2.0.0",
+    "pyarrow>=10.0.0",
+    "pyproj>=3.6.0",
+    "rasterio>=1.3.0",
+    "regionmask>=0.12.0",
+    "scikit-learn>=1.3.0",
+    "shapely>=2.0.0",
+    "tqdm>=4.65.0",
+    "twine>=6.1.0",
+    "xarray>=2023.1.0",
 ]
+
+[project.optional-dependencies]
+viz = [
+    "folium>=0.14.0",
+    "matplotlib>=3.7.0",
+    "seaborn>=0.12.0",
+]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+    "ruff>=0.1.0",
+    "mypy>=1.5.0",
+    "jupyter>=1.0.0",
+    "black>=23.0.0",
+]
+all = [
+    "netcdfkit[viz,dev]"
+]
+
+[project.urls]
+Homepage = "https://github.com/MuhammadShafeeque/netcdfkit"
+Documentation = "https://github.com/MuhammadShafeeque/netcdfkit/tree/main/examples"
+Repository = "https://github.com/MuhammadShafeeque/netcdfkit.git"
+Issues = "https://github.com/MuhammadShafeeque/netcdfkit/issues"
+Changelog = "https://github.com/MuhammadShafeeque/netcdfkit/releases"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/netcdfkit"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/src",
+    "/README.md",
+    "/LICENSE",
+    "/QUICKSTART.md",
+    "/API_REFERENCE.md",
+]
+
+[tool.ruff]
+line-length = 88
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "A", "C4", "ICN", "PIE", "T20", "Q"]
+ignore = ["E501"]  # Line too long
+
+[tool.mypy]
+python_version = "3.12"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+disallow_untyped_decorators = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+warn_unreachable = true
+strict_equality = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "--cov=netcdfkit --cov-report=term-missing --cov-report=html"
