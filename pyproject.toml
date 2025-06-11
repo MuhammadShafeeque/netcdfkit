@@ -1,6 +1,6 @@
 [project]
 name = "netcdfkit"
-version = "0.1.0"
+version = "0.1.1"
 description = "High-Performance NetCDF Data Extraction Toolkit for Climate and Environmental Sciences"
 readme = "README.md"
 license = { text = "MIT" }
@@ -126,7 +126,7 @@ addopts = "--cov=netcdfkit --cov-report=term-missing --cov-report=html"
 
 
 [tool.bumpver]
-current_version = "0.1.0"
+current_version = "0.1.1"
 version_pattern = "MAJOR.MINOR.PATCH"
 commit = true
 tag = true
