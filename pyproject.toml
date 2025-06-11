@@ -83,7 +83,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/netcdfkit"]
+packages = ["netcdfkit"]
 
 [tool.hatch.build.targets.sdist]
 include = [
