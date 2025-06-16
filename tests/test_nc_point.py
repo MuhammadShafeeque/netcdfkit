@@ -1,12 +1,11 @@
 """Test cases for NetCDFPointExtractor."""
 
-from pathlib import Path
-import tempfile
 import shutil
+import tempfile
+from pathlib import Path
 
-import pytest
 import pandas as pd
-import numpy as np
+import pytest
 
 from netcdfkit.point_extractor import NetCDFPointExtractor
 
