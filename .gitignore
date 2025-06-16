@@ -80,6 +80,7 @@ conda-env/
 # Jupyter Notebook
 .ipynb_checkpoints
 *.ipynb
+!simple_example.ipynb
 profile_default/
 ipython_config.py
 
