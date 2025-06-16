@@ -1,19 +1,17 @@
 from __future__ import annotations
-from pathlib import Path
-from typing import Optional, Dict, List, Union, Tuple
-import pandas as pd
-import geopandas as gpd
-import xarray as xr
-import numpy as np
-from pyproj import CRS, Transformer
+
 import json
-from tqdm import tqdm
 import warnings
-from sklearn.cluster import DBSCAN
-import regionmask
+from pathlib import Path
+
+import geopandas as gpd
+import numpy as np
+import pandas as pd
 import rasterio.features
-from shapely.geometry import Point, Polygon, box
-import dask
+import xarray as xr
+from pyproj import CRS, Transformer
+from shapely.geometry import Polygon
+from tqdm import tqdm
 
 warnings.filterwarnings("ignore")
 
@@ -49,7 +47,7 @@ class NetCDFPolygonExtractor:
 
     def analyze_country_distribution(
         self, polygons_gdf: gpd.GeoDataFrame, max_chunk_size: int = 500
-    ) -> Dict:
+    ) -> dict:
         """
         Create country-based chunks for efficient NetCDF access
 
@@ -103,9 +101,9 @@ class NetCDFPolygonExtractor:
     def create_country_chunks(
         self,
         polygons_gdf: gpd.GeoDataFrame,
-        cluster_info: Dict,
+        cluster_info: dict,
         max_chunk_size: int = 500,
-    ) -> List[Dict]:
+    ) -> list[dict]:
         """
         Create country-based chunks for efficient NetCDF access
 
@@ -127,7 +125,7 @@ class NetCDFPolygonExtractor:
             country_col = "inferred_country"
 
         # Process each country
-        for country_code, summary in cluster_info["country_summary"].items():
+        for country_code, _summary in cluster_info["country_summary"].items():
             country_polygons = polygons_gdf[
                 polygons_gdf[country_col] == country_code
             ].copy()
@@ -180,7 +178,7 @@ class NetCDFPolygonExtractor:
         shapefile_path: str | Path,
         variable: str,
         id_column: str = "NUTS_ID",
-        statistics: List[str] = ["mean"],
+        statistics: list[str] | None = None,
         force_recache: bool = False,
     ) -> str:
         """
@@ -218,7 +216,7 @@ class NetCDFPolygonExtractor:
             print(f"Found existing cache: {cache_id}")
             try:
                 # Try to load cache
-                with open(cache_path, "r") as f:
+                with open(cache_path) as f:
                     self.dataset_info = json.load(f)
                 self.polygons_gdf = gpd.read_parquet(polygons_cache_path)
                 return cache_id
@@ -247,9 +245,9 @@ class NetCDFPolygonExtractor:
 
         # Transform polygons to NetCDF CRS upfront
         if ds_crs:
-            print(f"Transforming all polygons from EPSG:4326 to NetCDF CRS...")
+            print("Transforming all polygons from EPSG:4326 to NetCDF CRS...")
             self.polygons_gdf = self._transform_all_polygons(self.polygons_gdf, ds_crs)
-            print(f"Polygon transformation complete")
+            print("Polygon transformation complete")
         else:
             print("No CRS transformation needed")
 
@@ -318,7 +316,7 @@ class NetCDFPolygonExtractor:
 
     def _detect_coordinate_mapping(
         self, ds: xr.Dataset, variable: str
-    ) -> Dict[str, str]:
+    ) -> dict[str, str]:
         """Detect the coordinate names used in the NetCDF file"""
 
         var_dims = ds[variable].dims
@@ -347,7 +345,6 @@ class NetCDFPolygonExtractor:
     ) -> gpd.GeoDataFrame:
         """Transform all polygons from EPSG:4326 to NetCDF CRS"""
 
-        from pyproj import Transformer
 
         # Create transformer
         input_crs = CRS.from_epsg(4326)
@@ -368,10 +365,10 @@ class NetCDFPolygonExtractor:
         self,
         ds: xr.Dataset,
         variable: str,
-        chunk: Dict,
-        coord_mapping: Dict[str, str],
-        statistics: List[str],
-    ) -> Dict:
+        chunk: dict,
+        coord_mapping: dict[str, str],
+        statistics: list[str],
+    ) -> dict:
         """Extract statistics for all polygons in a chunk using rasterio rasterization"""
 
         # Get polygons in this chunk
@@ -395,7 +392,7 @@ class NetCDFPolygonExtractor:
         y_coords = ds[lat_coord].values
 
         # Create coordinate grids
-        X, Y = np.meshgrid(x_coords, y_coords)
+        x_grid, y_grid = np.meshgrid(x_coords, y_coords)
 
         # Get grid properties for rasterization
         transform = self._get_affine_transform(x_coords, y_coords)
@@ -502,8 +499,6 @@ class NetCDFPolygonExtractor:
         from rasterio.transform import from_bounds
 
         # Calculate pixel sizes
-        dx = x_coords[1] - x_coords[0] if len(x_coords) > 1 else 1000  # default 1km
-        dy = y_coords[1] - y_coords[0] if len(y_coords) > 1 else 1000  # default 1km
 
         # Get bounds
         west, east = x_coords[0], x_coords[-1]
@@ -551,7 +546,7 @@ class NetCDFPolygonExtractor:
             return transform(lambda lon, lat: transformer.transform(lon, lat), geometry)
 
     def _save_statistics_cache(
-        self, all_statistics: Dict, cache_id: str, statistics: List[str]
+        self, all_statistics: dict, cache_id: str, statistics: list[str]
     ):
         """Save statistics data efficiently using Parquet format"""
 
@@ -597,12 +592,12 @@ class NetCDFPolygonExtractor:
     def load_polygon_timeseries(
         self,
         cache_id: str,
-        polygon_ids: Union[str, List[str], None] = None,
-        country_code: Optional[str] = None,
-        start_date: Optional[str] = None,
-        end_date: Optional[str] = None,
+        polygon_ids: str | list[str] | None = None,
+        country_code: str | None = None,
+        start_date: str | None = None,
+        end_date: str | None = None,
         statistic: str = "mean",
-    ) -> Dict[str, pd.Series]:
+    ) -> dict[str, pd.Series]:
         """
         Load time series for specific polygons with flexible filtering
 
@@ -712,9 +707,9 @@ class NetCDFPolygonExtractor:
     def _filter_polygons(
         self,
         polygons_gdf: gpd.GeoDataFrame,
-        polygon_ids: Union[str, List[str], None],
-        country_code: Optional[str],
-    ) -> List[str]:
+        polygon_ids: str | list[str] | None,
+        country_code: str | None,
+    ) -> list[str]:
         """Filter polygons based on IDs and/or country code"""
 
         filtered_gdf = polygons_gdf.copy()
@@ -751,7 +746,7 @@ class NetCDFPolygonExtractor:
 
             if not valid_ids:
                 print(
-                    f"Warning: None of the requested polygon IDs found in the filtered dataset"
+                    "Warning: None of the requested polygon IDs found in the filtered dataset"
                 )
                 return []
 
@@ -761,7 +756,7 @@ class NetCDFPolygonExtractor:
         return filtered_gdf.index.tolist()
 
     def _filter_by_date_range(
-        self, df: pd.DataFrame, start_date: Optional[str], end_date: Optional[str]
+        self, df: pd.DataFrame, start_date: str | None, end_date: str | None
     ) -> pd.DataFrame:
         """Filter dataframe by date range"""
 
@@ -784,10 +779,10 @@ class NetCDFPolygonExtractor:
         self,
         cache_id: str,
         output_path: str | Path,
-        polygon_ids: Union[str, List[str], None] = None,
-        country_code: Optional[str] = None,
-        start_date: Optional[str] = None,
-        end_date: Optional[str] = None,
+        polygon_ids: str | list[str] | None = None,
+        country_code: str | None = None,
+        start_date: str | None = None,
+        end_date: str | None = None,
         statistic: str = "mean",
         wide_format: bool = False,
     ) -> pd.DataFrame:
@@ -884,7 +879,7 @@ class NetCDFPolygonExtractor:
         # Check metadata
         cache_path = self.metadata_dir / f"{cache_id}.json"
         if cache_path.exists():
-            with open(cache_path, "r") as f:
+            with open(cache_path) as f:
                 metadata = json.load(f)
             print(f"Metadata keys: {list(metadata.keys())}")
             print(f"Statistics: {metadata.get('statistics', 'Not found')}")
@@ -915,7 +910,7 @@ class NetCDFPolygonExtractor:
             print("Statistics file not found")
 
     def get_polygon_info(
-        self, cache_id: str, polygon_ids: Union[str, List[str], None] = None
+        self, cache_id: str, polygon_ids: str | list[str] | None = None
     ) -> pd.DataFrame:
         """
         Get detailed information about polygons
@@ -979,14 +974,14 @@ class NetCDFPolygonExtractor:
 
         return country_df.reset_index(drop=True)
 
-    def get_cache_info(self, cache_id: str) -> Dict:
+    def get_cache_info(self, cache_id: str) -> dict:
         """Get detailed information about a cached extraction"""
 
         cache_path = self.metadata_dir / f"{cache_id}.json"
         if not cache_path.exists():
             raise FileNotFoundError(f"Cache metadata not found: {cache_path}")
 
-        with open(cache_path, "r") as f:
+        with open(cache_path) as f:
             info = json.load(f)
 
         return info
@@ -1085,7 +1080,7 @@ class NetCDFPolygonExtractor:
         summaries = []
 
         for cache_file in cache_files:
-            with open(cache_file, "r") as f:
+            with open(cache_file) as f:
                 info = json.load(f)
 
             # Handle both old and new metadata structures
@@ -1110,13 +1105,13 @@ class NetCDFPolygonExtractor:
         if isinstance(obj, dict):
             converted_dict = {}
             for k, v in obj.items():
-                if isinstance(k, (np.integer, np.int8, np.int16, np.int32, np.int64)):
+                if isinstance(k, np.integer | np.int8 | np.int16 | np.int32 | np.int64):
                     key = int(k)
-                elif isinstance(k, (np.floating, np.float16, np.float32, np.float64)):
+                elif isinstance(k, np.floating | np.float16 | np.float32 | np.float64):
                     key = float(k)
                 elif isinstance(k, np.bool_):
                     key = bool(k)
-                elif hasattr(k, "item") and not isinstance(k, (list, dict, str)):
+                elif hasattr(k, "item") and not isinstance(k, list | dict | str):
                     try:
                         key = k.item()
                     except (ValueError, AttributeError):
@@ -1130,13 +1125,13 @@ class NetCDFPolygonExtractor:
             return [self._convert_numpy_types(i) for i in obj]
         elif isinstance(obj, np.ndarray):
             return obj.tolist()
-        elif isinstance(obj, (np.integer, np.int8, np.int16, np.int32, np.int64)):
+        elif isinstance(obj, np.integer | np.int8 | np.int16 | np.int32 | np.int64):
             return int(obj)
-        elif isinstance(obj, (np.floating, np.float16, np.float32, np.float64)):
+        elif isinstance(obj, np.floating | np.float16 | np.float32 | np.float64):
             return float(obj)
         elif isinstance(obj, np.bool_):
             return bool(obj)
-        elif hasattr(obj, "item") and not isinstance(obj, (list, dict, str)):
+        elif hasattr(obj, "item") and not isinstance(obj, list | dict | str):
             try:
                 return obj.item()
             except (ValueError, AttributeError):

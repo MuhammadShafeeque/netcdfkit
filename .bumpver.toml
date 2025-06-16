@@ -10,6 +10,6 @@ push = false
 "pyproject.toml" = [
     '^version = "{version}"$',
 ]
-"netcdfkit/__init__.py" = [
+"src/netcdfkit/__init__.py" = [
     '^__version__ = "{version}"$',
 ]

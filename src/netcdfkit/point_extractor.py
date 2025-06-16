@@ -1,14 +1,15 @@
 from __future__ import annotations
+
+import json
+import warnings
 from pathlib import Path
-from typing import Optional, Dict, List, Union
+
+import numpy as np
 import pandas as pd
 import xarray as xr
-import numpy as np
 from pyproj import CRS, Transformer
-import json
-from tqdm import tqdm
-import warnings
 from sklearn.cluster import DBSCAN
+from tqdm import tqdm
 
 warnings.filterwarnings("ignore")
 
@@ -27,6 +28,7 @@ class NetCDFPointExtractor:
     """
 
     def __init__(self, cache_dir: str | Path = "timeseries_cache"):
+        """Initialize the NetCDFPointExtractor."""
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(exist_ok=True)
 
@@ -34,16 +36,38 @@ class NetCDFPointExtractor:
         self.metadata_dir = self.cache_dir / "metadata"
         self.timeseries_dir = self.cache_dir / "timeseries"
         self.metadata_dir.mkdir(exist_ok=True)
-        self.timeseries_dir.mkdir(exist_ok=True)
+        self.timeseries_dir.mkdir(exist_ok=True)        # Internal state
+        self._points_df: pd.DataFrame | None = None
+        self.spatial_chunks: list[dict] | None = None
+        self.dataset_info: dict | None = None
 
-        # Internal state
-        self.points_df = None
-        self.spatial_chunks = None
-        self.dataset_info = None
+    @property
+    def points_df(self) -> pd.DataFrame | None:
+        """Get the points DataFrame."""
+        return self._points_df
+
+    @points_df.setter
+    def points_df(self, df: pd.DataFrame | None) -> None:
+        """Set the points DataFrame with coordinate validation."""
+        if df is not None:
+            # Validate required columns
+            required_cols = ["lat", "lon", "ID"]
+            if not all(col in df.columns for col in required_cols):
+                raise ValueError(f"DataFrame must contain columns: {required_cols}")
+
+            # Validate latitude values
+            if (df["lat"] < -90).any() or (df["lat"] > 90).any():
+                raise ValueError("Latitude values must be between -90 and 90")
+
+            # Validate longitude values
+            if (df["lon"] < -180).any() or (df["lon"] > 180).any():
+                raise ValueError("Longitude values must be between -180 and 180")
+
+        self._points_df = df
 
     def analyze_spatial_distribution(
         self, points_df: pd.DataFrame, eps_km: float = 100, min_samples: int = 2
-    ) -> Dict:
+    ) -> dict:
         """
         Automatically detect spatial clusters (countries/regions) in point data
 
@@ -119,10 +143,10 @@ class NetCDFPointExtractor:
     def create_spatial_chunks(
         self,
         points_df: pd.DataFrame,
-        cluster_info: Dict,
+        cluster_info: dict,
         buffer_km: float = 50,
         max_chunk_points: int = 5000,
-    ) -> List[Dict]:
+    ) -> list[dict]:
         """
         Create optimal spatial chunks for efficient NetCDF access
 
@@ -188,7 +212,7 @@ class NetCDFPointExtractor:
                 f"Creating individual chunks for {len(noise_points)} isolated points..."
             )
 
-            for idx, (_, point) in enumerate(noise_points.iterrows()):
+            for _idx, (_, point) in enumerate(noise_points.iterrows()):
                 chunk = {
                     "chunk_id": chunk_id,
                     "cluster_label": -1,
@@ -216,12 +240,12 @@ class NetCDFPointExtractor:
         max_points: int,
         buffer_deg_lon: float,
         buffer_deg_lat: float,
-    ) -> List[Dict]:
+    ) -> list[dict]:
         """Split large clusters into sub-chunks"""
 
         n_sub_chunks = int(np.ceil(len(cluster_points) / max_points))
         print(
-            f"    Splitting large cluster ({len(cluster_points)} points) into {n_sub_chunks} sub-chunks"
+            f"    Splitting cluster {len(cluster_points)} pts into {n_sub_chunks} parts"
         )
 
         # Use K-means to split cluster
@@ -256,7 +280,7 @@ class NetCDFPointExtractor:
         netcdf_path: str | Path,
         points_path: str | Path,
         variable: str,
-        date_col: Optional[str] = None,
+        date_col: str | None = None,
         force_recache: bool = False,
     ) -> str:
         """
@@ -292,7 +316,7 @@ class NetCDFPointExtractor:
             print(f"Found existing cache: {cache_id}")
             try:
                 # Try to load cache
-                with open(cache_path, "r") as f:
+                with open(cache_path) as f:
                     self.dataset_info = json.load(f)
                 self.points_df = pd.read_csv(points_cache_path, index_col=0)
                 return cache_id
@@ -381,7 +405,7 @@ class NetCDFPointExtractor:
 
     def _detect_coordinate_mapping(
         self, ds: xr.Dataset, variable: str
-    ) -> Dict[str, str]:
+    ) -> dict[str, str]:
         """Detect the coordinate names used in the NetCDF file"""
 
         var_dims = ds[variable].dims
@@ -424,10 +448,10 @@ class NetCDFPointExtractor:
         self,
         ds: xr.Dataset,
         variable: str,
-        chunk: Dict,
-        transformer: Optional[Transformer],
-        coord_mapping: Dict[str, str],
-    ) -> Dict:
+        chunk: dict,
+        transformer: Transformer | None,
+        coord_mapping: dict[str, str],
+    ) -> dict:
         """Extract time series for all points in a spatial chunk"""
 
         # Get points in this chunk
@@ -439,11 +463,9 @@ class NetCDFPointExtractor:
         lat_coord = coord_mapping.get("lat", "y")
 
         # Load spatial subset of NetCDF
-        bounds = chunk["bounds"]
-
         # For now, skip spatial subsetting to avoid issues - just use full dataset
         # This is just an optimization, the main functionality still works
-        print(f"    Using full dataset (spatial subsetting disabled for debugging)")
+        print("    Using full dataset (spatial subsetting disabled for debugging)")
         spatial_subset = ds
 
         # Extract time series for each point in chunk
@@ -490,7 +512,7 @@ class NetCDFPointExtractor:
                     chunk_timeseries[point_idx] = timeseries
                     n_valid = (~timeseries.isna()).sum()
                     print(
-                        f"    ✓ Point {point_idx}: Extracted {len(timeseries)} timesteps, {n_valid} valid values"
+                        f"    ✓ Pt {point_idx}: {len(timeseries)} steps, {n_valid} valid"
                     )
                 else:
                     print(f"    ✗ Point {point_idx}: No valid data found (all NaN)")
@@ -501,7 +523,7 @@ class NetCDFPointExtractor:
                 if (
                     len(chunk_timeseries) == 0 and point_idx <= chunk_points.index[2]
                 ):  # First 3 points
-                    print(f"      Detailed error for debugging:")
+                    print("      Detailed error for debugging:")
                     print(f"      - lon_coord='{lon_coord}', lat_coord='{lat_coord}'")
                     print(f"      - Transformed coords: x={x:.1f}, y={y:.1f}")
                     print(
@@ -535,7 +557,7 @@ class NetCDFPointExtractor:
 
         return chunk_timeseries
 
-    def _save_timeseries_cache(self, all_timeseries: Dict, cache_id: str):
+    def _save_timeseries_cache(self, all_timeseries: dict, cache_id: str):
         """Save time series data efficiently using Parquet format"""
 
         # Convert to DataFrame format suitable for Parquet
@@ -559,8 +581,8 @@ class NetCDFPointExtractor:
             print(f"Saved {len(all_timeseries)} time series to {cache_file}")
 
     def load_point_timeseries(
-        self, cache_id: str, point_ids: Union[int, List[int], str] = "all"
-    ) -> Dict[int, pd.Series]:
+        self, cache_id: str, point_ids: int | list[int] | str = "all"
+    ) -> dict[int, pd.Series]:
         """
         Load time series for specific points or all points
 
@@ -586,7 +608,7 @@ class NetCDFPointExtractor:
 
         # Filter points if specified
         if point_ids != "all":
-            if isinstance(point_ids, (int, np.integer)):
+            if isinstance(point_ids, int | np.integer):
                 point_ids = [point_ids]
             df = df[df["point_id"].isin(point_ids)]
 
@@ -603,8 +625,8 @@ class NetCDFPointExtractor:
     def export_point_timeseries_csv(
         self,
         cache_id: str,
-        point_ids: Union[int, List[int], str] = "all",
-        output_path: Optional[str | Path] = None,
+        point_ids: int | list[int] | str = "all",
+        output_path: str | Path | None = None,
     ) -> pd.DataFrame:
         """Export point time series to CSV format"""
 
@@ -638,9 +660,9 @@ class NetCDFPointExtractor:
     def generate_multi_scenario_results(
         self,
         cache_id: str,
-        days_back_list: List[int],
-        date_col: Optional[str] = None,
-        output_path: Optional[str | Path] = None,
+        days_back_list: list[int],
+        date_col: str | None = None,
+        output_path: str | Path | None = None,
     ) -> pd.DataFrame:
         """
         Generate results for multiple days_back scenarios efficiently
@@ -706,7 +728,7 @@ class NetCDFPointExtractor:
         return results_df
 
     def _calculate_temporal_average(
-        self, timeseries: pd.Series, target_date: Optional[pd.Timestamp], days_back: int
+        self, timeseries: pd.Series, target_date: pd.Timestamp | None, days_back: int
     ) -> float:
         """Calculate temporal average for a single point"""
 
@@ -728,7 +750,7 @@ class NetCDFPointExtractor:
             return np.nan
 
     def _load_points(
-        self, path: str | Path, date_col: Optional[str] = None
+        self, path: str | Path, date_col: str | None = None
     ) -> pd.DataFrame:
         """Load point locations from CSV file"""
         df = pd.read_csv(path)
@@ -812,7 +834,7 @@ class NetCDFPointExtractor:
             print(f"Warning: Could not construct CRS from CF attributes: {str(e)}")
             return None
 
-    def _setup_transformer(self, ds_crs: Optional[CRS]) -> Optional[Transformer]:
+    def _setup_transformer(self, ds_crs: CRS | None) -> Transformer | None:
         """Setup coordinate transformer"""
         if ds_crs:
             input_crs = CRS.from_epsg(4326)
@@ -831,7 +853,7 @@ class NetCDFPointExtractor:
         summaries = []
 
         for cache_file in cache_files:
-            with open(cache_file, "r") as f:
+            with open(cache_file) as f:
                 info = json.load(f)
 
             summary = {
@@ -854,13 +876,13 @@ class NetCDFPointExtractor:
             converted_dict = {}
             for k, v in obj.items():
                 # Convert keys to JSON-compatible types
-                if isinstance(k, (np.integer, np.int8, np.int16, np.int32, np.int64)):
+                if isinstance(k, np.integer | np.int8 | np.int16 | np.int32 | np.int64):
                     key = int(k)
-                elif isinstance(k, (np.floating, np.float16, np.float32, np.float64)):
+                elif isinstance(k, np.floating | np.float16 | np.float32 | np.float64):
                     key = float(k)
                 elif isinstance(k, np.bool_):
                     key = bool(k)
-                elif hasattr(k, "item") and not isinstance(k, (list, dict, str)):
+                elif hasattr(k, "item") and not isinstance(k, list | dict | str):
                     try:
                         key = k.item()
                     except (ValueError, AttributeError):
@@ -875,13 +897,13 @@ class NetCDFPointExtractor:
             return [self._convert_numpy_types(i) for i in obj]
         elif isinstance(obj, np.ndarray):
             return obj.tolist()
-        elif isinstance(obj, (np.integer, np.int8, np.int16, np.int32, np.int64)):
+        elif isinstance(obj, np.integer | np.int8 | np.int16 | np.int32 | np.int64):
             return int(obj)
-        elif isinstance(obj, (np.floating, np.float16, np.float32, np.float64)):
+        elif isinstance(obj, np.floating | np.float16 | np.float32 | np.float64):
             return float(obj)
         elif isinstance(obj, np.bool_):
             return bool(obj)
-        elif hasattr(obj, "item") and not isinstance(obj, (list, dict, str)):
+        elif hasattr(obj, "item") and not isinstance(obj, list | dict | str):
             # Handle other numpy scalars
             try:
                 return obj.item()

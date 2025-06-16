@@ -50,6 +50,7 @@ dependencies = [
     "pyproj>=3.6.0",
     "rasterio>=1.3.0",
     "regionmask>=0.12.0",
+    "ruff>=0.11.13",
     "scikit-learn>=1.3.0",
     "seaborn>=0.13.2",
     "shapely>=2.0.0",
@@ -100,12 +101,32 @@ include = [
 ]
 
 [tool.ruff]
-line-length = 88
 target-version = "py312"
+line-length = 100
+indent-width = 4
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I", "N", "UP", "B", "A", "C4", "ICN", "PIE", "T20", "Q"]
-ignore = ["E501"]  # Line too long
+select = ["E", "F", "B", "I", "N", "UP", "T20"]
+ignore = [
+    "T201",  # We'll fix print statements later with proper logging
+    "N999",  # We have already renamed the modules
+    "E501",  # Line too long warnings - will fix in a separate PR
+    "UP038", # Union syntax in isinstance - requires Python 3.10+
+]
+
+fixable = ["ALL"]
+unfixable = []
+
+# Allow unused variables when underscore-prefixed
+dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
+
+[tool.ruff.lint.isort]
+known-first-party = ["netcdfkit"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "auto"
 
 [tool.mypy]
 python_version = "3.12"

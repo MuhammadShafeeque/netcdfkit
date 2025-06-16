@@ -5,8 +5,8 @@ A comprehensive Python library for efficient extraction of time series data
 from large NetCDF files at specific geographic points and polygon regions.
 """
 
-from .ncPntExtractor import NetCDFPointExtractor
-from .ncPolyExtraction import NetCDFPolygonExtractor
+from .point_extractor import NetCDFPointExtractor
+from .polygon_extractor import NetCDFPolygonExtractor
 
 __version__ = "0.1.1"
 __author__ = "Muhammad Shafeeque"
